@@ -66,6 +66,27 @@ export const ApiResponse = {
   methodNotAllowed: apiMethodNotAllowed,
 };
 
+// Drizzle wraps driver errors in `cause`, the Neon WebSocket driver hands back an
+// ErrorEvent (`error`), and Node reports a dual-stack refusal as an AggregateError
+// with an empty message, so ECONNREFUSED is rarely on the top-level message.
+function isConnectionRefused(error: unknown, depth = 0): boolean {
+  if (depth > 5 || typeof error !== 'object' || error === null) return false;
+
+  const { code, message, cause, error: inner, errors } = error as {
+    code?: unknown;
+    message?: unknown;
+    cause?: unknown;
+    error?: unknown;
+    errors?: unknown;
+  };
+
+  if (code === 'ECONNREFUSED') return true;
+  if (typeof message === 'string' && message.includes('ECONNREFUSED')) return true;
+
+  const nested = [cause, inner, ...(Array.isArray(errors) ? (errors as unknown[]) : [])];
+  return nested.some((e) => e !== error && isConnectionRefused(e, depth + 1));
+}
+
 // Modern async error wrapper - cleaner than try/catch everywhere
 export function withErrorHandling<T extends unknown[]>(
   handler: (...args: T) => Promise<NextResponse | Response>
@@ -84,7 +105,7 @@ export function withErrorHandling<T extends unknown[]>(
           return apiError('Feature not implemented', 501, error.message);
         }
 
-        if (error.message.includes('ECONNREFUSED')) {
+        if (isConnectionRefused(error)) {
           return apiError('Database connection failed', 503);
         }
 
